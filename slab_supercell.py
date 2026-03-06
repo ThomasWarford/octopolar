@@ -1,8 +1,77 @@
+import math
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from pymatgen.core.structure import Structure
 from pymatgen.core.surface import Slab
-import math
+
+
+def make_slab_from_ouc(
+    n_layers: int,
+    vacuum: float,
+    ouc: Structure,
+    *,
+    miller_index: tuple[int, int, int] = (0, 0, 1),
+    shift: float = 0.0,
+    scale_factor: ArrayLike = (1, 1, 1),
+    reorient_lattice: bool = True,
+    energy: float | None = None,
+    reconstruction: str | None = None,
+) -> Slab:
+    """Build a slab by stacking an OUC along c and adding vacuum.
+
+    Args:
+        n_layers: Number of OUC repeats in the slab region.
+        vacuum: Vacuum thickness in angstrom.
+        ouc: Oriented unit cell to stack.
+        miller_index: Slab Miller index metadata for the returned Slab.
+        shift: Slab shift metadata for the returned Slab.
+        scale_factor: Scale factor metadata for the returned Slab.
+        reorient_lattice: Passed through to Slab constructor.
+        energy: Optional slab energy metadata.
+        reconstruction: Optional reconstruction metadata.
+
+    Returns:
+        Slab: A slab built from the provided OUC.
+    """
+    if n_layers <= 0:
+        raise ValueError("n_layers must be a positive integer.")
+    if vacuum < 0:
+        raise ValueError("vacuum must be non-negative.")
+
+    ouc = ouc.copy()
+    c_length = ouc.lattice.c
+
+    c_scale = n_layers + vacuum / c_length
+    new_lattice = np.array(ouc.lattice.matrix)
+    new_lattice[2] *= c_scale
+
+    all_cart_coords = []
+    for idx in range(n_layers):
+        all_cart_coords.extend(ouc.cart_coords + idx * ouc.lattice.matrix[2])
+
+    rebuilt = Structure(
+        new_lattice,
+        ouc.species_and_occu * n_layers,
+        all_cart_coords,
+        coords_are_cartesian=True,
+        site_properties={key: values * n_layers for key, values in ouc.site_properties.items()},
+    )
+
+    slab = Slab(
+        rebuilt.lattice,
+        rebuilt.species_and_occu,
+        rebuilt.frac_coords,
+        miller_index,
+        ouc,
+        shift,
+        scale_factor,
+        reorient_lattice=reorient_lattice,
+        site_properties=rebuilt.site_properties,
+        energy=energy,
+    )
+    slab.reconstruction = reconstruction
+    return slab
 
 def _validate_xy_scaling_matrix(scaling_matrix: ArrayLike) -> NDArray[np.int64]:
     """Validate and normalize a scaling matrix for in-plane slab supercells."""
@@ -53,41 +122,22 @@ def make_slab_xy_supercell_from_ouc(slab: Slab, scaling_matrix: ArrayLike) -> Sl
         raise ValueError("Cannot infer an integer number of slab layers from the input slab and OUC.")
     n_slab_layers = int(round(n_slab_layers))
 
-    n_total_layers = slab.lattice.c / slab.oriented_unit_cell.lattice.c
-    if not math.isclose(n_total_layers, round(n_total_layers), abs_tol=1e-8):
-        raise ValueError("Cannot infer an integer number of total layers from slab and OUC c lattice lengths.")
-    n_total_layers = int(round(n_total_layers))
-
-    if n_slab_layers <= 0 or n_total_layers < n_slab_layers:
+    slab_thickness = n_slab_layers * slab.oriented_unit_cell.lattice.c
+    vacuum = slab.lattice.c - slab_thickness
+    if n_slab_layers <= 0 or vacuum < -1e-8:
         raise ValueError("Invalid slab/OUC layering inferred from input slab.")
+    vacuum = max(0.0, vacuum)
 
-    frac_coords = ouc.frac_coords + np.array([0, 0, -slab.shift])[None, :]
-    frac_coords -= np.floor(frac_coords)
-    frac_coords[:, 2] /= n_total_layers
-
-    all_coords = []
-    for idx in range(n_slab_layers):
-        shifted_coords = frac_coords.copy()
-        shifted_coords[:, 2] += idx / n_total_layers
-        all_coords.extend(shifted_coords)
-
-    site_props = {key: values * n_slab_layers for key, values in ouc.site_properties.items()}
-    new_lattice = np.array(ouc.lattice.matrix)
-    new_lattice[2] *= n_total_layers
-    rebuilt = Structure(new_lattice, ouc.species_and_occu * n_slab_layers, all_coords, site_properties=site_props)
-
-    scale_factor = np.dot(matrix, slab.scale_factor)
-    new_slab = Slab(
-        rebuilt.lattice,
-        rebuilt.species_and_occu,
-        rebuilt.frac_coords,
-        slab.miller_index,
-        ouc,
-        slab.shift,
-        scale_factor,
+    scale_factor = np.dot(matrix, np.array(slab.scale_factor))
+    new_slab = make_slab_from_ouc(
+        n_layers=n_slab_layers,
+        vacuum=vacuum,
+        ouc=ouc,
+        miller_index=slab.miller_index,
+        shift=slab.shift,
+        scale_factor=scale_factor,
         reorient_lattice=slab.reorient_lattice,
-        site_properties=rebuilt.site_properties,
         energy=slab.energy,
+        reconstruction=slab.reconstruction,
     )
-    new_slab.reconstruction = slab.reconstruction
     return new_slab
