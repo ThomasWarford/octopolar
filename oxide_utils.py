@@ -7,6 +7,7 @@ import pulp
 from joblib import Memory
 from mp_api.client import MPRester
 from pymatgen.core.surface import Slab, SlabGenerator
+from slab_supercell import make_slab_xy_supercell_from_ouc
 
 
 memory = Memory(".cachedir")
@@ -31,6 +32,7 @@ def make_slab(
         min_slab_size,
         min_vacuum_size,
         primitive=primitive,
+        max_normal_search=5,
     )
     return slab_gen.get_slab()
 
@@ -74,6 +76,7 @@ def patch_slab_helpers() -> None:
     Slab.required_surface_charge = _required_surface_charge
     Slab.ouc_site_to_slab_site_idx = _ouc_site_to_slab_site_idx
     Slab.move_to_other_side = _move_to_other_side
+    Slab.make_supercell = make_slab_xy_supercell_from_ouc
 
 
 def solve_lexicographic_with_pulp(
